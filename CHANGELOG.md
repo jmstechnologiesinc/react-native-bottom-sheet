@@ -1,32 +1,5 @@
 
 
-## [5.1.2](https://github.com/gorhom/react-native-bottom-sheet/compare/v5.1.1...v5.1.2) (2025-03-09)
-
-
-### Bug Fixes
-
-* **#2163:** restart closing animation when container height get updated ([4ed9f3c](https://github.com/gorhom/react-native-bottom-sheet/commit/4ed9f3cb542316a984893efa2025ca5384ffe89a)), closes [#2163](https://github.com/gorhom/react-native-bottom-sheet/issues/2163)
-* **#2177:** set absolute fill to backdrop default style ([979ba7c](https://github.com/gorhom/react-native-bottom-sheet/commit/979ba7ce0b9d69abfaefd169ee692bf818fa4d0d)), closes [#2177](https://github.com/gorhom/react-native-bottom-sheet/issues/2177)
-
-## [5.1.1](https://github.com/gorhom/react-native-bottom-sheet/compare/v5.1.0...v5.1.1) (2025-02-09)
-
-
-### Bug Fixes
-
-* **#2043:** handle unnecessary invocation of index side effect ([#2073](https://github.com/gorhom/react-native-bottom-sheet/issues/2073))(inspired by @IslamRustamov) ([2164c02](https://github.com/gorhom/react-native-bottom-sheet/commit/2164c02e63177f9ac69acc05722c85e8d55cd931)), closes [#2043](https://github.com/gorhom/react-native-bottom-sheet/issues/2043)
-
-# [5.1.0](https://github.com/gorhom/react-native-bottom-sheet/compare/v5.0.6...v5.1.0) (2025-02-06)
-
-
-### Bug Fixes
-
-* **#2129:** fixed initial isAnimatedOnMount value ([0850cb8](https://github.com/gorhom/react-native-bottom-sheet/commit/0850cb864819f79189592cb66c2b6d179957ba61))
-
-
-### Features
-
-* added enableBlurKeyboardOnGesture prop to handle blurring keyboard on gesture ([1c31aca](https://github.com/gorhom/react-native-bottom-sheet/commit/1c31acad50a7c171548ea7f4594a4d1d563cf40f))
-
 ## [5.0.6](https://github.com/gorhom/react-native-bottom-sheet/compare/v5.0.5...v5.0.6) (2024-11-17)
 
 

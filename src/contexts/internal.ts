@@ -24,7 +24,6 @@ export interface BottomSheetInternalContextType
         | 'enableOverDrag'
         | 'enablePanDownToClose'
         | 'enableDynamicSizing'
-        | 'enableBlurKeyboardOnGesture'
         | 'overDragResistanceFactor'
       >
     > {
