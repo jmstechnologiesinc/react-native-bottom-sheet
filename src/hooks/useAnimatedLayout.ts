@@ -105,6 +105,45 @@ export function useAnimatedLayout(
     },
     [state, verticalInset, modal]
   );
+  // Workaround for gorhom/react-native-bottom-sheet#2690:
+  // On Reanimated 4 the useAnimatedReaction above can miss the initial
+  // INITIAL_LAYOUT_VALUE (-999) -> measured-height transition (race on mount,
+  // e.g. when the screen container is recycled by react-native-screens on a
+  // second navigation). When missed, containerHeight stays at the sentinel, the
+  // detents never normalize and the sheet mounts off-screen / invisible.
+  // We re-sync from rawContainerHeight on the JS thread after mount as a net.
+  useEffect(() => {
+    let frame: number | undefined;
+    let attempts = 0;
+    const trySync = () => {
+      const current = state.value;
+      if (current.containerHeight !== INITIAL_LAYOUT_VALUE) {
+        return;
+      }
+      const raw = current.rawContainerHeight;
+      const fromContainer = containerLayoutState?.get().height;
+      const measured =
+        raw != null && raw !== INITIAL_LAYOUT_VALUE ? raw : fromContainer;
+      if (measured != null && measured !== INITIAL_LAYOUT_VALUE) {
+        state.modify(_state => {
+          'worklet';
+          _state.containerHeight = modal ? measured - verticalInset : measured;
+          return _state;
+        });
+        return;
+      }
+      if (attempts++ < 10) {
+        frame = requestAnimationFrame(trySync);
+      }
+    };
+    frame = requestAnimationFrame(trySync);
+    return () => {
+      if (frame !== undefined) {
+        cancelAnimationFrame(frame);
+      }
+    };
+  }, [state, containerLayoutState, modal, verticalInset]);
+
   useEffect(() => {
     Dimensions.addEventListener('change', ({ window }) => {
       state.modify(_state => {
