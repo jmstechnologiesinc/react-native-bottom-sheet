@@ -5,17 +5,18 @@ import React, {
   useMemo,
 } from 'react';
 import { Gesture } from 'react-native-gesture-handler';
-import { useAnimatedProps, useAnimatedStyle } from 'react-native-reanimated';
+import { useAnimatedProps } from 'react-native-reanimated';
 import {
   SCROLLABLE_DECELERATION_RATE_MAPPER,
-  SCROLLABLE_STATE,
+  SCROLLABLE_STATUS,
   type SCROLLABLE_TYPE,
 } from '../../constants';
 import { BottomSheetDraggableContext } from '../../contexts/gesture';
 import {
+  useBottomSheetContentContainerStyle,
   useBottomSheetInternal,
-  useScrollHandler,
   useScrollableSetter,
+  useScrollHandler,
   useStableCallback,
 } from '../../hooks';
 import { ScrollableContainer } from './ScrollableContainer';
@@ -37,7 +38,7 @@ export function createBottomSheetScrollableComponent<T, P>(
       overScrollMode = 'never',
       keyboardDismissMode = 'interactive',
       showsVerticalScrollIndicator = true,
-      style,
+      contentContainerStyle: _providedContentContainerStyle,
       refreshing,
       onRefresh,
       progressViewOffset,
@@ -62,8 +63,7 @@ export function createBottomSheetScrollableComponent<T, P>(
         onScrollEndDrag
       );
     const {
-      animatedFooterHeight,
-      animatedScrollableState,
+      animatedScrollableStatus: animatedScrollableState,
       enableContentPanningGesture,
     } = useBottomSheetInternal();
     const { setContentSize } = useBottomSheetContentSizeSetter();
@@ -79,7 +79,7 @@ export function createBottomSheetScrollableComponent<T, P>(
         decelerationRate:
           SCROLLABLE_DECELERATION_RATE_MAPPER[animatedScrollableState.value],
         showsVerticalScrollIndicator: showsVerticalScrollIndicator
-          ? animatedScrollableState.value === SCROLLABLE_STATE.UNLOCKED
+          ? animatedScrollableState.value === SCROLLABLE_STATUS.UNLOCKED
           : showsVerticalScrollIndicator,
       }),
       [animatedScrollableState, showsVerticalScrollIndicator]
@@ -89,7 +89,7 @@ export function createBottomSheetScrollableComponent<T, P>(
       () =>
         draggableGesture
           ? Gesture.Native()
-              // @ts-ignore
+              // @ts-expect-error
               .simultaneousWithExternalGesture(draggableGesture)
               .shouldCancelWhenOutside(false)
           : undefined,
@@ -101,7 +101,6 @@ export function createBottomSheetScrollableComponent<T, P>(
     const handleContentSizeChange = useStableCallback(
       (contentWidth: number, contentHeight: number) => {
         setContentSize(contentHeight);
-
         if (onContentSizeChange) {
           onContentSizeChange(contentWidth, contentHeight);
         }
@@ -110,26 +109,14 @@ export function createBottomSheetScrollableComponent<T, P>(
     //#endregion
 
     //#region styles
-    const containerAnimatedStyle = useAnimatedStyle(
-      () => ({
-        marginBottom: enableFooterMarginAdjustment
-          ? animatedFooterHeight.value
-          : 0,
-      }),
-      [animatedFooterHeight, enableFooterMarginAdjustment]
+    const contentContainerStyle = useBottomSheetContentContainerStyle(
+      enableFooterMarginAdjustment,
+      _providedContentContainerStyle
     );
-    const containerStyle = useMemo(() => {
-      return enableFooterMarginAdjustment
-        ? [
-            ...(style ? ('length' in style ? style : [style]) : []),
-            containerAnimatedStyle,
-          ]
-        : style;
-    }, [enableFooterMarginAdjustment, style, containerAnimatedStyle]);
     //#endregion
 
     //#region effects
-    // @ts-ignore
+    // @ts-expect-error
     useImperativeHandle(ref, () => scrollableRef.current);
     useScrollableSetter(
       scrollableRef,
@@ -151,7 +138,7 @@ export function createBottomSheetScrollableComponent<T, P>(
         refreshing={refreshing}
         scrollEventThrottle={16}
         progressViewOffset={progressViewOffset}
-        style={containerStyle}
+        contentContainerStyle={contentContainerStyle}
         onRefresh={onRefresh}
         onScroll={scrollHandler}
         onContentSizeChange={handleContentSizeChange}

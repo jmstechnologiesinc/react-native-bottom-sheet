@@ -238,6 +238,14 @@ Defines the keyboard blur behavior.
 | ------------------- | ------- | -------- |
 | 'none' \| 'restore' | 'none'  | NO       |
 
+### enableBlurKeyboardOnGesture
+
+Enable blurring the keyboard when user start to drag the bottom sheet.
+
+| type    | default | required |
+| ------- | ------- | -------- |
+| boolean | false    | NO       |
+
 ### android_keyboardInputMode
 
 Defines keyboard input mode for `Android` only, [learn more](https://developer.android.com/guide/topics/manifest/activity-element#wsoft).
@@ -364,7 +372,7 @@ type onChange = (index: number) => void;
 Callback when the sheet about to animate to a new position.
 
 ```ts
-type onAnimate = (fromIndex: number, toIndex: number) => void;
+type onAnimate = (fromIndex: number, toIndex: number, fromPosition: number, toPosition: number) => void;
 ```
 
 | type     | default | required |

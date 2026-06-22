@@ -7,6 +7,8 @@ import React, {
 import type { LayoutChangeEvent, ViewProps } from 'react-native';
 import type { SimultaneousGesture } from 'react-native-gesture-handler';
 import Animated from 'react-native-reanimated';
+import { INITIAL_LAYOUT_VALUE } from '../../constants';
+import { useBottomSheetInternal } from '../../hooks';
 import { BottomSheetDraggableScrollable } from './BottomSheetDraggableScrollable';
 
 interface ScrollableContainerProps {
@@ -21,7 +23,7 @@ interface ScrollableContainerProps {
  * Detect if the current browser is Safari or not.
  */
 const isWebkit = () => {
-  // @ts-ignore
+  // @ts-expect-error
   return navigator.userAgent.indexOf('Safari') > -1;
 };
 
@@ -41,6 +43,10 @@ export const ScrollableContainer = forwardRef<
 ) {
   //#region refs
   const isInitialContentHeightCaptured = useRef(false);
+  //#endregion
+
+  //#region hooks
+  const { animatedLayoutState } = useBottomSheetInternal();
   //#endregion
 
   //#region callbacks
@@ -66,14 +72,21 @@ export const ScrollableContainer = forwardRef<
         if (!isWebkit()) {
           return;
         }
-        // @ts-ignore
+
+        /**
+         * early exit if the content height been calculated.
+         */
+        if (animatedLayoutState.get().contentHeight !== INITIAL_LAYOUT_VALUE) {
+          return;
+        }
+        // @ts-expect-error
         window.requestAnimationFrame(() => {
-          // @ts-ignore
+          // @ts-expect-error
           setContentSize(event.nativeEvent.target.clientHeight);
         });
       }
     },
-    [onLayout, setContentSize]
+    [onLayout, setContentSize, animatedLayoutState]
   );
   //#endregion
   return (

@@ -1,39 +1,36 @@
 import invariant from 'invariant';
 import React, {
-  useMemo,
-  useCallback,
   forwardRef,
-  useImperativeHandle,
   memo,
+  useCallback,
   useEffect,
+  useImperativeHandle,
+  useMemo,
 } from 'react';
-import { type Insets, Platform } from 'react-native';
+import { Dimensions, Platform, StyleSheet } from 'react-native';
 import { State } from 'react-native-gesture-handler';
 import Animated, {
-  useAnimatedReaction,
-  useSharedValue,
-  useAnimatedStyle,
-  useDerivedValue,
-  runOnJS,
-  interpolate,
-  Extrapolation,
-  runOnUI,
   cancelAnimation,
-  useWorkletCallback,
+  Extrapolation,
+  interpolate,
+  ReduceMotion,
+  runOnJS,
+  runOnUI,
+  useAnimatedReaction,
+  useDerivedValue,
+  useReducedMotion,
+  useSharedValue,
   type WithSpringConfig,
   type WithTimingConfig,
-  type SharedValue,
-  useReducedMotion,
-  ReduceMotion,
 } from 'react-native-reanimated';
 import {
   ANIMATION_SOURCE,
-  ANIMATION_STATE,
+  ANIMATION_STATUS,
+  INITIAL_LAYOUT_VALUE,
   KEYBOARD_BEHAVIOR,
   KEYBOARD_BLUR_BEHAVIOR,
   KEYBOARD_INPUT_MODE,
-  KEYBOARD_STATE,
-  SCROLLABLE_STATE,
+  KEYBOARD_STATUS,
   SHEET_STATE,
   SNAP_POINT_TYPE,
 } from '../../constants';
@@ -42,48 +39,49 @@ import {
   BottomSheetProvider,
 } from '../../contexts';
 import {
-  useAnimatedSnapPoints,
-  useKeyboard,
+  useAnimatedDetents,
+  useAnimatedKeyboard,
+  useAnimatedLayout,
   usePropsValidator,
   useReactiveSharedValue,
   useScrollable,
+  useStableCallback,
 } from '../../hooks';
-import type { BottomSheetMethods } from '../../types';
+import type { AnimationState, BottomSheetMethods } from '../../types';
 import {
   animate,
   getKeyboardAnimationConfigs,
   normalizeSnapPoint,
   print,
 } from '../../utilities';
-import BottomSheetBackdropContainer from '../bottomSheetBackdropContainer';
-import BottomSheetBackgroundContainer from '../bottomSheetBackgroundContainer';
-import BottomSheetContainer from '../bottomSheetContainer';
+import { BottomSheetBackgroundContainer } from '../bottomSheetBackground';
 // import BottomSheetDebugView from '../bottomSheetDebugView';
-import BottomSheetDraggableView from '../bottomSheetDraggableView';
-import BottomSheetFooterContainer from '../bottomSheetFooterContainer/BottomSheetFooterContainer';
+import { BottomSheetFooterContainer } from '../bottomSheetFooter';
 import BottomSheetGestureHandlersProvider from '../bottomSheetGestureHandlersProvider';
-import BottomSheetHandleContainer from '../bottomSheetHandleContainer';
+import {
+  BottomSheetHandle,
+  BottomSheetHandleContainer,
+} from '../bottomSheetHandle';
+import { BottomSheetHostingContainer } from '../bottomSheetHostingContainer';
+import { BottomSheetBody } from './BottomSheetBody';
+import { BottomSheetContent } from './BottomSheetContent';
 import {
   DEFAULT_ACCESSIBILITY_LABEL,
   DEFAULT_ACCESSIBILITY_ROLE,
   DEFAULT_ACCESSIBLE,
   DEFAULT_ANIMATE_ON_MOUNT,
   DEFAULT_DYNAMIC_SIZING,
+  DEFAULT_ENABLE_BLUR_KEYBOARD_ON_GESTURE,
   DEFAULT_ENABLE_CONTENT_PANNING_GESTURE,
   DEFAULT_ENABLE_OVER_DRAG,
   DEFAULT_ENABLE_PAN_DOWN_TO_CLOSE,
   DEFAULT_KEYBOARD_BEHAVIOR,
   DEFAULT_KEYBOARD_BLUR_BEHAVIOR,
+  DEFAULT_KEYBOARD_INDEX,
   DEFAULT_KEYBOARD_INPUT_MODE,
   DEFAULT_OVER_DRAG_RESISTANCE_FACTOR,
-  INITIAL_CONTAINER_HEIGHT,
-  INITIAL_CONTAINER_OFFSET,
-  INITIAL_HANDLE_HEIGHT,
-  INITIAL_POSITION,
-  INITIAL_SNAP_POINT,
   INITIAL_VALUE,
 } from './constants';
-import { styles } from './styles';
 import type { AnimateToPositionType, BottomSheetProps } from './types';
 
 Animated.addWhitelistedUIProps({
@@ -112,7 +110,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       overrideReduceMotion: _providedOverrideReduceMotion,
 
       // styles
-      style: _providedStyle,
+      style,
       containerStyle: _providedContainerStyle,
       backgroundStyle: _providedBackgroundStyle,
       handleStyle: _providedHandleStyle,
@@ -125,13 +123,15 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       keyboardBehavior = DEFAULT_KEYBOARD_BEHAVIOR,
       keyboardBlurBehavior = DEFAULT_KEYBOARD_BLUR_BEHAVIOR,
       android_keyboardInputMode = DEFAULT_KEYBOARD_INPUT_MODE,
+      enableBlurKeyboardOnGesture = DEFAULT_ENABLE_BLUR_KEYBOARD_ON_GESTURE,
 
       // layout
-      containerHeight: _providedContainerHeight,
-      containerOffset: _providedContainerOffset,
+      containerLayoutState,
       topInset = 0,
       bottomInset = 0,
       maxDynamicContentSize,
+      containerHeight,
+      containerOffset,
 
       // animated callback shared values
       animatedPosition: _providedAnimatedPosition,
@@ -155,8 +155,8 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       detached = false,
 
       // components
-      handleComponent,
-      backdropComponent,
+      handleComponent = BottomSheetHandle,
+      backdropComponent: BackdropComponent,
       backgroundComponent,
       footerComponent,
       children,
@@ -179,102 +179,74 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         enableDynamicSizing,
         topInset,
         bottomInset,
+        containerHeight,
+        containerOffset,
       });
     }
     //#endregion
 
     //#region layout variables
-    /**
-     * This variable is consider an internal variable,
-     * that will be used conditionally in `animatedContainerHeight`
-     */
-    const _animatedContainerHeight = useReactiveSharedValue(
-      _providedContainerHeight ?? INITIAL_CONTAINER_HEIGHT
+    const animatedLayoutState = useAnimatedLayout(
+      containerLayoutState,
+      topInset,
+      bottomInset,
+      $modal,
+      handleComponent === null
     );
-    /**
-     * This is a conditional variable, where if the `BottomSheet` is used
-     * in a modal, then it will subset vertical insets (top+bottom) from
-     * provided container height.
-     */
-    const animatedContainerHeight = useDerivedValue(() => {
-      const verticalInset = topInset + bottomInset;
-      return $modal
-        ? _animatedContainerHeight.value - verticalInset
-        : _animatedContainerHeight.value;
-    }, [topInset, bottomInset, $modal, _animatedContainerHeight]);
-    const animatedContainerOffset = useReactiveSharedValue(
-      _providedContainerOffset ?? INITIAL_CONTAINER_OFFSET
-    ) as SharedValue<Required<Insets>>;
-    const animatedHandleHeight = useReactiveSharedValue<number>(
-      INITIAL_HANDLE_HEIGHT
+    const animatedDetentsState = useAnimatedDetents(
+      _providedSnapPoints,
+      animatedLayoutState,
+      enableDynamicSizing,
+      maxDynamicContentSize,
+      detached,
+      $modal,
+      bottomInset
     );
-    const animatedFooterHeight = useSharedValue(0);
-    const animatedContentHeight = useSharedValue(INITIAL_CONTAINER_HEIGHT);
-    const [animatedSnapPoints, animatedDynamicSnapPointIndex] =
-      useAnimatedSnapPoints(
-        _providedSnapPoints,
-        animatedContainerHeight,
-        animatedContentHeight,
-        animatedHandleHeight,
-        animatedFooterHeight,
-        enableDynamicSizing,
-        maxDynamicContentSize
-      );
-    const animatedHighestSnapPoint = useDerivedValue(
-      () => animatedSnapPoints.value[animatedSnapPoints.value.length - 1],
-      [animatedSnapPoints]
-    );
-    const animatedClosedPosition = useDerivedValue(() => {
-      let closedPosition = animatedContainerHeight.value;
+    const animatedSheetHeight = useDerivedValue(() => {
+      const { containerHeight } = animatedLayoutState.get();
+      const { highestDetentPosition } = animatedDetentsState.get();
 
-      if ($modal || detached) {
-        closedPosition = animatedContainerHeight.value + bottomInset;
+      if (highestDetentPosition === undefined) {
+        return INITIAL_LAYOUT_VALUE;
       }
 
-      return closedPosition;
-    }, [animatedContainerHeight, $modal, detached, bottomInset]);
-    const animatedSheetHeight = useDerivedValue(
-      () => animatedContainerHeight.value - animatedHighestSnapPoint.value,
-      [animatedContainerHeight, animatedHighestSnapPoint]
-    );
+      return containerHeight - highestDetentPosition;
+    }, [animatedLayoutState, animatedDetentsState]);
     const animatedCurrentIndex = useReactiveSharedValue(
       animateOnMount ? -1 : _providedIndex
     );
-    const animatedPosition = useSharedValue(INITIAL_POSITION);
-    const animatedNextPosition = useSharedValue(INITIAL_VALUE);
-    const animatedNextPositionIndex = useSharedValue(INITIAL_VALUE);
+    const animatedPosition = useSharedValue(Dimensions.get('window').height);
 
     // conditional
-    const isAnimatedOnMount = useSharedValue(false);
-    const isContentHeightFixed = useSharedValue(false);
+    const didAnimateOnMount = useSharedValue(
+      !animateOnMount || _providedIndex === -1
+    );
     const isLayoutCalculated = useDerivedValue(() => {
       let isContainerHeightCalculated = false;
-      //container height was provided.
+      const { containerHeight, handleHeight } = animatedLayoutState.get();
+      //container height was provided and set not to initial value
       if (
-        _providedContainerHeight !== null ||
-        _providedContainerHeight !== undefined
+        containerHeight !== null &&
+        containerHeight !== undefined &&
+        containerHeight !== INITIAL_LAYOUT_VALUE
       ) {
-        isContainerHeightCalculated = true;
-      }
-      // container height did set.
-      if (animatedContainerHeight.value !== INITIAL_CONTAINER_HEIGHT) {
         isContainerHeightCalculated = true;
       }
 
       let isHandleHeightCalculated = false;
       // handle component is null.
       if (handleComponent === null) {
-        animatedHandleHeight.value = 0;
         isHandleHeightCalculated = true;
       }
       // handle height did set.
-      if (animatedHandleHeight.value !== INITIAL_HANDLE_HEIGHT) {
+      if (handleHeight !== INITIAL_LAYOUT_VALUE) {
         isHandleHeightCalculated = true;
       }
 
       let isSnapPointsNormalized = false;
+      const { detents } = animatedDetentsState.get();
       // the first snap point did normalized
-      if (animatedSnapPoints.value[0] !== INITIAL_SNAP_POINT) {
+      if (detents) {
         isSnapPointsNormalized = true;
       }
 
@@ -283,15 +255,8 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         isHandleHeightCalculated &&
         isSnapPointsNormalized
       );
-    }, [
-      _providedContainerHeight,
-      animatedContainerHeight,
-      animatedHandleHeight,
-      animatedSnapPoints,
-      handleComponent,
-    ]);
+    }, [animatedLayoutState, animatedDetentsState, handleComponent]);
     const isInTemporaryPosition = useSharedValue(false);
-    const isForcedClosing = useSharedValue(false);
     const animatedContainerHeightDidChange = useSharedValue(false);
 
     // gesture
@@ -304,24 +269,9 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
     //#endregion
 
     //#region hooks variables
-    // scrollable variables
-    const {
-      animatedScrollableType,
-      animatedScrollableContentOffsetY,
-      animatedScrollableOverrideState,
-      isScrollableRefreshable,
-      setScrollableRef,
-      removeScrollableRef,
-    } = useScrollable();
     // keyboard
-    const {
-      state: animatedKeyboardState,
-      height: animatedKeyboardHeight,
-      animationDuration: keyboardAnimationDuration,
-      animationEasing: keyboardAnimationEasing,
-      shouldHandleKeyboardEvents,
-    } = useKeyboard();
-    const animatedKeyboardHeightInContainer = useSharedValue(0);
+    const { state: animatedKeyboardState, textInputNodesRef } =
+      useAnimatedKeyboard();
     const userReduceMotionSetting = useReducedMotion();
     const reduceMotion = useMemo(() => {
       return !_providedOverrideReduceMotion ||
@@ -333,29 +283,40 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
 
     //#region state/dynamic variables
     // states
-    const animatedAnimationState = useSharedValue(ANIMATION_STATE.UNDETERMINED);
-    const animatedAnimationSource = useSharedValue<ANIMATION_SOURCE>(
-      ANIMATION_SOURCE.MOUNT
-    );
+    const animatedAnimationState = useSharedValue<AnimationState>({
+      status: ANIMATION_STATUS.UNDETERMINED,
+      source: ANIMATION_SOURCE.MOUNT,
+    });
     const animatedSheetState = useDerivedValue(() => {
-      // closed position = position >= container height
-      if (animatedPosition.value >= animatedClosedPosition.value) {
+      const { detents, closedDetentPosition } = animatedDetentsState.get();
+
+      if (
+        !detents ||
+        detents.length === 0 ||
+        closedDetentPosition === undefined
+      ) {
         return SHEET_STATE.CLOSED;
       }
 
+      // closed position = position >= container height
+      if (animatedPosition.value >= closedDetentPosition) {
+        return SHEET_STATE.CLOSED;
+      }
+
+      const { containerHeight } = animatedLayoutState.get();
       // extended position = container height - sheet height
-      const extendedPosition =
-        animatedContainerHeight.value - animatedSheetHeight.value;
+      const extendedPosition = containerHeight - animatedSheetHeight.value;
       if (animatedPosition.value === extendedPosition) {
         return SHEET_STATE.EXTENDED;
       }
 
       // extended position with keyboard =
       // container height - (sheet height + keyboard height in root container)
-      const keyboardHeightInContainer = animatedKeyboardHeightInContainer.value;
+      const keyboardHeightInContainer =
+        animatedKeyboardState.get().heightWithinContainer;
       const extendedPositionWithKeyboard = Math.max(
         0,
-        animatedContainerHeight.value -
+        containerHeight -
           (animatedSheetHeight.value + keyboardHeightInContainer)
       );
 
@@ -380,142 +341,43 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
 
       return SHEET_STATE.OPENED;
     }, [
-      animatedClosedPosition,
-      animatedContainerHeight,
-      animatedKeyboardHeightInContainer,
+      animatedLayoutState,
+      animatedDetentsState,
+      animatedKeyboardState,
       animatedPosition,
       animatedSheetHeight,
       isInTemporaryPosition,
       keyboardBehavior,
     ]);
-    const animatedScrollableState = useDerivedValue<SCROLLABLE_STATE>(() => {
-      /**
-       * if user had disabled content panning gesture, then we unlock
-       * the scrollable state.
-       */
-      if (!enableContentPanningGesture) {
-        return SCROLLABLE_STATE.UNLOCKED;
-      }
-
-      /**
-       * if scrollable override state is set, then we just return its value.
-       */
-      if (
-        animatedScrollableOverrideState.value !== SCROLLABLE_STATE.UNDETERMINED
-      ) {
-        return animatedScrollableOverrideState.value;
-      }
-      /**
-       * if sheet state is fill parent, then unlock scrolling
-       */
-      if (animatedSheetState.value === SHEET_STATE.FILL_PARENT) {
-        return SCROLLABLE_STATE.UNLOCKED;
-      }
-
-      /**
-       * if sheet state is extended, then unlock scrolling
-       */
-      if (animatedSheetState.value === SHEET_STATE.EXTENDED) {
-        return SCROLLABLE_STATE.UNLOCKED;
-      }
-
-      /**
-       * if keyboard is shown and sheet is animating
-       * then we do not lock the scrolling to not lose
-       * current scrollable scroll position.
-       */
-      if (
-        animatedKeyboardState.value === KEYBOARD_STATE.SHOWN &&
-        animatedAnimationState.value === ANIMATION_STATE.RUNNING
-      ) {
-        return SCROLLABLE_STATE.UNLOCKED;
-      }
-
-      return SCROLLABLE_STATE.LOCKED;
-    }, [
+    const {
+      state: animatedScrollableState,
+      status: animatedScrollableStatus,
+      setScrollableRef,
+      removeScrollableRef,
+    } = useScrollable(
       enableContentPanningGesture,
-      animatedAnimationState,
-      animatedKeyboardState,
-      animatedScrollableOverrideState,
       animatedSheetState,
-    ]);
+      animatedKeyboardState,
+      animatedAnimationState
+    );
     // dynamic
-    const animatedContentHeightMax = useDerivedValue(() => {
-      const keyboardHeightInContainer = animatedKeyboardHeightInContainer.value;
-      const handleHeight = Math.max(0, animatedHandleHeight.value);
-      let contentHeight = animatedSheetHeight.value - handleHeight;
-
-      if (
-        keyboardBehavior === KEYBOARD_BEHAVIOR.extend &&
-        animatedKeyboardState.value === KEYBOARD_STATE.SHOWN
-      ) {
-        contentHeight = contentHeight - keyboardHeightInContainer;
-      } else if (
-        keyboardBehavior === KEYBOARD_BEHAVIOR.fillParent &&
-        isInTemporaryPosition.value
-      ) {
-        if (animatedKeyboardState.value === KEYBOARD_STATE.SHOWN) {
-          contentHeight =
-            animatedContainerHeight.value -
-            handleHeight -
-            keyboardHeightInContainer;
-        } else {
-          contentHeight = animatedContainerHeight.value - handleHeight;
-        }
-      } else if (
-        keyboardBehavior === KEYBOARD_BEHAVIOR.interactive &&
-        isInTemporaryPosition.value
-      ) {
-        const contentWithKeyboardHeight =
-          contentHeight + keyboardHeightInContainer;
-
-        if (animatedKeyboardState.value === KEYBOARD_STATE.SHOWN) {
-          if (
-            keyboardHeightInContainer + animatedSheetHeight.value >
-            animatedContainerHeight.value
-          ) {
-            contentHeight =
-              animatedContainerHeight.value -
-              keyboardHeightInContainer -
-              handleHeight;
-          }
-        } else if (
-          contentWithKeyboardHeight + handleHeight >
-          animatedContainerHeight.value
-        ) {
-          contentHeight = animatedContainerHeight.value - handleHeight;
-        } else {
-          contentHeight = contentWithKeyboardHeight;
-        }
+    const animatedIndex = useDerivedValue(() => {
+      const { detents } = animatedDetentsState.get();
+      if (!detents || detents.length === 0) {
+        return -1;
       }
 
-      /**
-       * before the container is measured, `contentHeight` value will be below zero,
-       * which will lead to freeze the scrollable.
-       *
-       * @link (https://github.com/gorhom/react-native-bottom-sheet/issues/470)
-       */
-      return Math.max(contentHeight, 0);
-    }, [
-      animatedContainerHeight,
-      animatedHandleHeight,
-      animatedKeyboardHeightInContainer,
-      animatedKeyboardState,
-      animatedSheetHeight,
-      isInTemporaryPosition,
-      keyboardBehavior,
-    ]);
-    const animatedIndex = useDerivedValue(() => {
-      const adjustedSnapPoints = animatedSnapPoints.value.slice().reverse();
-      const adjustedSnapPointsIndexes = animatedSnapPoints.value
+      const adjustedSnapPoints = detents.slice().reverse();
+      const adjustedSnapPointsIndexes = detents
         .slice()
         .map((_, index: number) => index)
         .reverse();
 
+      const { containerHeight } = animatedLayoutState.get();
       /**
        * we add the close state index `-1`
        */
-      adjustedSnapPoints.push(animatedContainerHeight.value);
+      adjustedSnapPoints.push(containerHeight);
       adjustedSnapPointsIndexes.push(-1);
 
       const currentIndex = isLayoutCalculated.value
@@ -527,14 +389,20 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           )
         : -1;
 
+      const {
+        status: animationStatus,
+        source: animationSource,
+        nextIndex,
+        nextPosition,
+      } = animatedAnimationState.get();
       /**
        * if the sheet is currently running an animation by the keyboard opening,
        * then we clamp the index on android with resize keyboard mode.
        */
       if (
         android_keyboardInputMode === KEYBOARD_INPUT_MODE.adjustResize &&
-        animatedAnimationSource.value === ANIMATION_SOURCE.KEYBOARD &&
-        animatedAnimationState.value === ANIMATION_STATE.RUNNING &&
+        animationStatus === ANIMATION_STATUS.RUNNING &&
+        animationSource === ANIMATION_SOURCE.KEYBOARD &&
         isInTemporaryPosition.value
       ) {
         return Math.max(animatedCurrentIndex.value, currentIndex);
@@ -545,39 +413,38 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
        * by dynamic content height -, then we return the next position index.
        */
       if (
-        animatedAnimationSource.value === ANIMATION_SOURCE.SNAP_POINT_CHANGE &&
-        animatedAnimationState.value === ANIMATION_STATE.RUNNING
+        animationStatus === ANIMATION_STATUS.RUNNING &&
+        animationSource === ANIMATION_SOURCE.SNAP_POINT_CHANGE &&
+        nextIndex !== undefined &&
+        nextPosition !== undefined
       ) {
-        return animatedNextPositionIndex.value;
+        return nextIndex;
       }
 
       return currentIndex;
     }, [
       android_keyboardInputMode,
-      animatedAnimationSource,
       animatedAnimationState,
-      animatedContainerHeight,
+      animatedLayoutState,
       animatedCurrentIndex,
-      animatedNextPositionIndex,
       animatedPosition,
-      animatedSnapPoints,
+      animatedDetentsState,
       isInTemporaryPosition,
       isLayoutCalculated,
     ]);
     //#endregion
 
     //#region private methods
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleOnChange = useCallback(
       function handleOnChange(index: number, position: number) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleOnChange.name,
+            component: 'BottomSheet',
+            method: 'handleOnChange',
             category: 'callback',
             params: {
               index,
-              animatedCurrentIndex: animatedCurrentIndex.value,
+              position,
             },
           });
         }
@@ -586,139 +453,237 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           return;
         }
 
+        const { dynamicDetentIndex } = animatedDetentsState.get();
+
         _providedOnChange(
           index,
           position,
-          index === animatedDynamicSnapPointIndex.value
+          index === dynamicDetentIndex
             ? SNAP_POINT_TYPE.DYNAMIC
             : SNAP_POINT_TYPE.PROVIDED
         );
       },
-      [_providedOnChange, animatedCurrentIndex, animatedDynamicSnapPointIndex]
+      [_providedOnChange, animatedDetentsState]
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleOnAnimate = useCallback(
-      function handleOnAnimate(targetIndex: number) {
+      function handleOnAnimate(targetIndex: number, targetPosition: number) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleOnAnimate.name,
+            component: 'BottomSheet',
+            method: 'handleOnAnimate',
             category: 'callback',
             params: {
               toIndex: targetIndex,
+              toPosition: targetPosition,
               fromIndex: animatedCurrentIndex.value,
+              fromPosition: animatedPosition.value,
             },
           });
+        }
+
+        if (targetIndex === animatedCurrentIndex.get()) {
+          return;
         }
 
         if (!_providedOnAnimate) {
           return;
         }
 
-        if (targetIndex !== animatedCurrentIndex.value) {
-          _providedOnAnimate(animatedCurrentIndex.value, targetIndex);
-        }
+        _providedOnAnimate(
+          animatedCurrentIndex.value,
+          targetIndex,
+          animatedPosition.value,
+          targetPosition
+        );
       },
-      [_providedOnAnimate, animatedCurrentIndex]
+      [_providedOnAnimate, animatedCurrentIndex, animatedPosition]
+    );
+    const handleOnClose = useCallback(
+      function handleOnClose() {
+        if (__DEV__) {
+          print({
+            component: 'BottomSheet',
+            method: 'handleOnClose',
+            category: 'callback',
+          });
+        }
+
+        if (!_providedOnClose) {
+          return;
+        }
+
+        _providedOnClose();
+      },
+      [_providedOnClose]
     );
     //#endregion
 
     //#region animation
-    const stopAnimation = useWorkletCallback(() => {
+    const stopAnimation = useCallback(() => {
+      'worklet';
       cancelAnimation(animatedPosition);
-      animatedAnimationSource.value = ANIMATION_SOURCE.NONE;
-      animatedAnimationState.value = ANIMATION_STATE.STOPPED;
-    }, [animatedPosition, animatedAnimationState, animatedAnimationSource]);
-    const animateToPositionCompleted = useWorkletCallback(
+      animatedAnimationState.set({
+        status: ANIMATION_STATUS.STOPPED,
+        source: ANIMATION_SOURCE.NONE,
+      });
+    }, [animatedPosition, animatedAnimationState]);
+    const animateToPositionCompleted = useCallback(
       function animateToPositionCompleted(isFinished?: boolean) {
+        'worklet';
         if (!isFinished) {
           return;
         }
 
+        const { nextIndex, nextPosition } = animatedAnimationState.get();
+
         if (__DEV__) {
           runOnJS(print)({
-            component: BottomSheet.name,
-            method: animateToPositionCompleted.name,
+            component: 'BottomSheet',
+            method: 'animateToPositionCompleted',
             params: {
-              animatedCurrentIndex: animatedCurrentIndex.value,
-              animatedNextPosition: animatedNextPosition.value,
-              animatedNextPositionIndex: animatedNextPositionIndex.value,
+              currentIndex: animatedCurrentIndex.value,
+              nextIndex,
+              nextPosition,
             },
           });
         }
 
-        if (animatedAnimationSource.value === ANIMATION_SOURCE.MOUNT) {
-          isAnimatedOnMount.value = true;
+        if (nextIndex === undefined || nextPosition === undefined) {
+          return;
         }
 
+        // callbacks
+        if (nextIndex !== animatedCurrentIndex.get()) {
+          runOnJS(handleOnChange)(nextIndex, nextPosition);
+        }
+
+        if (nextIndex === -1) {
+          runOnJS(handleOnClose)();
+        }
+
+        animatedCurrentIndex.set(nextIndex);
+
         // reset values
-        isForcedClosing.value = false;
-        animatedAnimationSource.value = ANIMATION_SOURCE.NONE;
-        animatedAnimationState.value = ANIMATION_STATE.STOPPED;
-        animatedNextPosition.value = INITIAL_VALUE;
-        animatedNextPositionIndex.value = INITIAL_VALUE;
-        animatedContainerHeightDidChange.value = false;
-      }
+        animatedContainerHeightDidChange.set(false);
+        didAnimateOnMount.set(true);
+        animatedAnimationState.set({
+          status: ANIMATION_STATUS.STOPPED,
+          source: ANIMATION_SOURCE.NONE,
+          nextIndex: undefined,
+          nextPosition: undefined,
+          isForcedClosing: undefined,
+        });
+      },
+      [
+        handleOnChange,
+        handleOnClose,
+        animatedCurrentIndex,
+        animatedAnimationState,
+        animatedContainerHeightDidChange,
+        didAnimateOnMount,
+      ]
     );
-    const animateToPosition: AnimateToPositionType = useWorkletCallback(
+    const animateToPosition: AnimateToPositionType = useCallback(
       function animateToPosition(
         position: number,
         source: ANIMATION_SOURCE,
         velocity = 0,
         configs?: WithTimingConfig | WithSpringConfig
       ) {
+        'worklet';
         if (__DEV__) {
           runOnJS(print)({
-            component: BottomSheet.name,
-            method: animateToPosition.name,
+            component: 'BottomSheet',
+            method: 'animateToPosition',
             params: {
               currentPosition: animatedPosition.value,
               nextPosition: position,
+              source,
             },
           });
         }
 
+        if (position === undefined) {
+          return;
+        }
+
+        if (position === animatedPosition.get()) {
+          return;
+        }
+
+        // early exit if there is a running animation to
+        // the same position
+        const { status: animationStatus, nextPosition } =
+          animatedAnimationState.get();
         if (
-          position === animatedPosition.value ||
-          position === undefined ||
-          (animatedAnimationState.value === ANIMATION_STATE.RUNNING &&
-            position === animatedNextPosition.value)
+          animationStatus === ANIMATION_STATUS.RUNNING &&
+          position === nextPosition
         ) {
           return;
         }
 
         // stop animation if it is running
-        if (animatedAnimationState.value === ANIMATION_STATE.RUNNING) {
+        if (animationStatus === ANIMATION_STATUS.RUNNING) {
           stopAnimation();
         }
 
         /**
-         * set animation state to running, and source
-         */
-        animatedAnimationState.value = ANIMATION_STATE.RUNNING;
-        animatedAnimationSource.value = source;
-
-        /**
-         * store next position
-         */
-        animatedNextPosition.value = position;
-
-        /**
-         * offset the position if keyboard is shown
+         * offset the position if keyboard is shown and behavior not extend.
          */
         let offset = 0;
-        if (animatedKeyboardState.value === KEYBOARD_STATE.SHOWN) {
-          offset = animatedKeyboardHeightInContainer.value;
+
+        const { status, heightWithinContainer } = animatedKeyboardState.get();
+        const sheetState = animatedSheetState.get();
+        if (
+          status === KEYBOARD_STATUS.SHOWN &&
+          keyboardBehavior !== KEYBOARD_BEHAVIOR.extend &&
+          ([
+            ANIMATION_SOURCE.KEYBOARD,
+            ANIMATION_SOURCE.SNAP_POINT_CHANGE,
+          ].includes(source) ||
+            sheetState === SHEET_STATE.OVER_EXTENDED)
+        ) {
+          offset = heightWithinContainer;
+        }
+        const { detents, closedDetentPosition, highestDetentPosition } =
+          animatedDetentsState.get();
+        let index = detents?.indexOf(position + offset) ?? -1;
+
+        /**
+         * because keyboard position is not part of the detents array,
+         * we will need to manually set the index to the highest detent index.
+         */
+        if (
+          index === -1 &&
+          status === KEYBOARD_STATUS.SHOWN &&
+          position !== closedDetentPosition
+        ) {
+          if (detents !== undefined && highestDetentPosition !== undefined) {
+            index = detents.indexOf(highestDetentPosition);
+          }
+          if (index === -1) {
+            index = DEFAULT_KEYBOARD_INDEX;
+          }
         }
 
-        animatedNextPositionIndex.value = animatedSnapPoints.value.indexOf(
-          position + offset
-        );
+        /**
+         * set the animation state
+         */
+        animatedAnimationState.set(state => {
+          'worklet';
+          return {
+            ...state,
+            status: ANIMATION_STATUS.RUNNING,
+            source,
+            nextIndex: index,
+            nextPosition: position,
+          };
+        });
 
         /**
          * fire `onAnimate` callback
          */
-        runOnJS(handleOnAnimate)(animatedNextPositionIndex.value);
+        runOnJS(handleOnAnimate)(index, position);
 
         /**
          * start animation
@@ -733,8 +698,16 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       },
       [
         handleOnAnimate,
+        stopAnimation,
+        animateToPositionCompleted,
+        keyboardBehavior,
         _providedAnimationConfigs,
         _providedOverrideReduceMotion,
+        animatedDetentsState,
+        animatedAnimationState,
+        animatedKeyboardState,
+        animatedPosition,
+        animatedSheetState,
       ]
     );
     /**
@@ -742,42 +715,68 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
      *
      * @param targetPosition position to be set.
      */
-    const setToPosition = useWorkletCallback(function setToPosition(
-      targetPosition: number
-    ) {
-      if (
-        targetPosition === animatedPosition.value ||
-        targetPosition === undefined ||
-        (animatedAnimationState.value === ANIMATION_STATE.RUNNING &&
-          targetPosition === animatedNextPosition.value)
-      ) {
-        return;
-      }
+    const setToPosition = useCallback(
+      function setToPosition(targetPosition: number) {
+        'worklet';
+        if (!targetPosition) {
+          return;
+        }
 
-      if (__DEV__) {
-        runOnJS(print)({
-          component: BottomSheet.name,
-          method: setToPosition.name,
-          params: {
-            currentPosition: animatedPosition.value,
-            targetPosition,
-          },
+        if (targetPosition === animatedPosition.get()) {
+          return;
+        }
+
+        const { status: animationStatus, nextPosition } =
+          animatedAnimationState.get();
+
+        // early exit if there is a running animation to
+        // the same position
+        if (
+          animationStatus === ANIMATION_STATUS.RUNNING &&
+          targetPosition === nextPosition
+        ) {
+          return;
+        }
+
+        if (__DEV__) {
+          runOnJS(print)({
+            component: 'BottomSheet',
+            method: 'setToPosition',
+            params: {
+              currentPosition: animatedPosition.value,
+              targetPosition,
+            },
+          });
+        }
+
+        /**
+         * store next position
+         */
+        const { detents } = animatedDetentsState.get();
+        const index = detents?.indexOf(targetPosition) ?? -1;
+        animatedAnimationState.set(state => {
+          'worklet';
+          return {
+            ...state,
+            nextPosition: targetPosition,
+            nextIndex: index,
+          };
         });
-      }
 
-      /**
-       * store next position
-       */
-      animatedNextPosition.value = targetPosition;
-      animatedNextPositionIndex.value =
-        animatedSnapPoints.value.indexOf(targetPosition);
+        stopAnimation();
 
-      stopAnimation();
-
-      // set values
-      animatedPosition.value = targetPosition;
-      animatedContainerHeightDidChange.value = false;
-    }, []);
+        // set values
+        animatedPosition.value = targetPosition;
+        animatedContainerHeightDidChange.value = false;
+      },
+      [
+        stopAnimation,
+        animatedPosition,
+        animatedContainerHeightDidChange,
+        animatedAnimationState,
+        animatedDetentsState,
+      ]
+    );
     //#endregion
 
     //#region private methods
@@ -785,13 +784,21 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
      * Calculate and evaluate the current position based on multiple
      * local states.
      */
-    const getEvaluatedPosition = useWorkletCallback(
+    const getEvaluatedPosition = useCallback(
       function getEvaluatedPosition(source: ANIMATION_SOURCE) {
         'worklet';
         const currentIndex = animatedCurrentIndex.value;
-        const snapPoints = animatedSnapPoints.value;
-        const keyboardState = animatedKeyboardState.value;
-        const highestSnapPoint = animatedHighestSnapPoint.value;
+        const { detents, highestDetentPosition, closedDetentPosition } =
+          animatedDetentsState.get();
+        const keyboardStatus = animatedKeyboardState.get().status;
+
+        if (
+          detents === undefined ||
+          highestDetentPosition === undefined ||
+          closedDetentPosition === undefined
+        ) {
+          return;
+        }
 
         /**
          * if the keyboard blur behavior is restore and keyboard is hidden,
@@ -800,12 +807,12 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         if (
           source === ANIMATION_SOURCE.KEYBOARD &&
           keyboardBlurBehavior === KEYBOARD_BLUR_BEHAVIOR.restore &&
-          keyboardState === KEYBOARD_STATE.HIDDEN &&
+          keyboardStatus === KEYBOARD_STATUS.HIDDEN &&
           animatedContentGestureState.value !== State.ACTIVE &&
           animatedHandleGestureState.value !== State.ACTIVE
         ) {
           isInTemporaryPosition.value = false;
-          const nextPosition = snapPoints[currentIndex];
+          const nextPosition = detents[currentIndex];
           return nextPosition;
         }
 
@@ -815,9 +822,9 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          */
         if (
           keyboardBehavior === KEYBOARD_BEHAVIOR.extend &&
-          keyboardState === KEYBOARD_STATE.SHOWN
+          keyboardStatus === KEYBOARD_STATUS.SHOWN
         ) {
-          return highestSnapPoint;
+          return highestDetentPosition;
         }
 
         /**
@@ -826,7 +833,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          */
         if (
           keyboardBehavior === KEYBOARD_BEHAVIOR.fillParent &&
-          keyboardState === KEYBOARD_STATE.SHOWN
+          keyboardStatus === KEYBOARD_STATUS.SHOWN
         ) {
           isInTemporaryPosition.value = true;
           return 0;
@@ -838,7 +845,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          */
         if (
           keyboardBehavior === KEYBOARD_BEHAVIOR.interactive &&
-          keyboardState === KEYBOARD_STATE.SHOWN &&
+          keyboardStatus === KEYBOARD_STATUS.SHOWN &&
           // ensure that this logic does not run on android
           // with resize input mode
           !(
@@ -848,8 +855,8 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         ) {
           isInTemporaryPosition.value = true;
           const keyboardHeightInContainer =
-            animatedKeyboardHeightInContainer.value;
-          return Math.max(0, highestSnapPoint - keyboardHeightInContainer);
+            animatedKeyboardState.get().heightWithinContainer;
+          return Math.max(0, highestDetentPosition - keyboardHeightInContainer);
         }
 
         /**
@@ -864,46 +871,82 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * if the bottom sheet did not animate on mount,
          * then we return the provided index or the closed position.
          */
-        if (!isAnimatedOnMount.value) {
+        if (!didAnimateOnMount.value) {
           return _providedIndex === -1
-            ? animatedClosedPosition.value
-            : snapPoints[_providedIndex];
+            ? closedDetentPosition
+            : detents[_providedIndex];
+        }
+
+        const { status, nextIndex, nextPosition } =
+          animatedAnimationState.get();
+
+        /**
+         * if the evaluated position is for a snap change source while the sheet is currently running
+         * an animation and the next position is different than the detent at next index,
+         * then we return the detent at next index.
+         *
+         * https://github.com/gorhom/react-native-bottom-sheet/issues/2431
+         */
+        if (
+          source === ANIMATION_SOURCE.SNAP_POINT_CHANGE &&
+          status === ANIMATION_STATUS.RUNNING &&
+          nextIndex !== undefined &&
+          nextPosition !== undefined &&
+          detents[nextIndex] !== nextPosition
+        ) {
+          return detents[nextIndex];
         }
 
         /**
          * return the current index position.
          */
-        return snapPoints[currentIndex];
+        return detents[currentIndex];
       },
       [
         animatedContentGestureState,
         animatedCurrentIndex,
         animatedHandleGestureState,
-        animatedHighestSnapPoint,
-        animatedKeyboardHeightInContainer,
+        animatedAnimationState,
         animatedKeyboardState,
         animatedPosition,
-        animatedSnapPoints,
+        animatedDetentsState,
         isInTemporaryPosition,
-        isAnimatedOnMount,
+        didAnimateOnMount,
         keyboardBehavior,
         keyboardBlurBehavior,
         _providedIndex,
+        android_keyboardInputMode,
       ]
     );
 
     /**
      * Evaluate the bottom sheet position based based on a event source and other local states.
      */
-    const evaluatePosition = useWorkletCallback(
+    const evaluatePosition = useCallback(
       function evaluatePosition(
         source: ANIMATION_SOURCE,
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
+        'worklet';
+        const {
+          status: animationStatus,
+          nextIndex,
+          isForcedClosing,
+        } = animatedAnimationState.get();
+
+        const { detents, closedDetentPosition } = animatedDetentsState.get();
+        if (
+          detents === undefined ||
+          detents.length === 0 ||
+          closedDetentPosition === undefined
+        ) {
+          return;
+        }
+
         /**
          * if a force closing is running and source not from user, then we early exit
          */
-        if (isForcedClosing.value && source !== ANIMATION_SOURCE.USER) {
+        if (isForcedClosing && source !== ANIMATION_SOURCE.USER) {
           return;
         }
         /**
@@ -914,12 +957,27 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         }
 
         const proposedPosition = getEvaluatedPosition(source);
+        if (proposedPosition === undefined) {
+          return;
+        }
 
         /**
          * when evaluating the position while the mount animation not been handled,
          * then we evaluate on mount use cases.
          */
-        if (!isAnimatedOnMount.value) {
+        if (!didAnimateOnMount.value) {
+          /**
+           * If a *close* animation is already running, do not override it with the mount
+           * animation (#2655). Keyboard-driven animations can also be RUNNING during this
+           * phase (e.g. TextInput autoFocus); those must not block mount or the sheet stays
+           * misaligned with the keyboard (#2661).
+           */
+          if (
+            animationStatus === ANIMATION_STATUS.RUNNING &&
+            (isForcedClosing || nextIndex === -1)
+          ) {
+            return;
+          }
           /**
            * if animate on mount is set to true, then we animate to the propose position,
            * else, we set the position with out animation.
@@ -933,7 +991,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
             );
           } else {
             setToPosition(proposedPosition);
-            isAnimatedOnMount.value = true;
+            didAnimateOnMount.value = true;
           }
           return;
         }
@@ -941,16 +999,14 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         /**
          * when evaluating the position while the bottom sheet is animating.
          */
-        if (animatedAnimationState.value === ANIMATION_STATE.RUNNING) {
+        if (animationStatus === ANIMATION_STATUS.RUNNING) {
+          const nextPositionIndex = nextIndex ?? INITIAL_VALUE;
           /**
            * when evaluating the position while the bottom sheet is
            * closing, then we force closing the bottom sheet with no animation.
            */
-          if (
-            animatedNextPositionIndex.value === -1 &&
-            !isInTemporaryPosition.value
-          ) {
-            setToPosition(animatedClosedPosition.value);
+          if (nextPositionIndex === -1 && !isInTemporaryPosition.value) {
+            setToPosition(closedDetentPosition);
             return;
           }
 
@@ -959,9 +1015,9 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
            * a position other than the current position, then we
            * restart the animation.
            */
-          if (animatedNextPositionIndex.value !== animatedCurrentIndex.value) {
+          if (nextPositionIndex !== animatedCurrentIndex.value) {
             animateToPosition(
-              animatedSnapPoints.value[animatedNextPositionIndex.value],
+              detents[nextPositionIndex],
               source,
               undefined,
               animationConfigs
@@ -975,7 +1031,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * position and not animating, we re-set the position to closed position.
          */
         if (
-          animatedAnimationState.value !== ANIMATION_STATE.RUNNING &&
+          animationStatus !== ANIMATION_STATUS.RUNNING &&
           animatedCurrentIndex.value === -1
         ) {
           /**
@@ -983,12 +1039,11 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
            */
           if (
             reduceMotion &&
-            animatedSnapPoints.value[animatedIndex.value] !==
-              animatedPosition.value
+            detents[animatedIndex.value] !== animatedPosition.value
           ) {
             return;
           }
-          setToPosition(animatedClosedPosition.value);
+          setToPosition(closedDetentPosition);
           return;
         }
 
@@ -1012,95 +1067,111 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           animationConfigs
         );
       },
-      [getEvaluatedPosition, animateToPosition, setToPosition, reduceMotion]
+      [
+        getEvaluatedPosition,
+        animateToPosition,
+        setToPosition,
+        reduceMotion,
+        animateOnMount,
+        animatedAnimationState,
+        animatedContainerHeightDidChange,
+        animatedCurrentIndex,
+        animatedIndex,
+        animatedPosition,
+        animatedDetentsState,
+        didAnimateOnMount,
+        isInTemporaryPosition,
+        isLayoutCalculated,
+      ]
     );
     //#endregion
 
     //#region public methods
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
-    const handleSnapToIndex = useCallback(
-      function handleSnapToIndex(
-        index: number,
-        animationConfigs?: WithSpringConfig | WithTimingConfig
+    const handleSnapToIndex = useStableCallback(function handleSnapToIndex(
+      index: number,
+      animationConfigs?: WithSpringConfig | WithTimingConfig
+    ) {
+      const { detents } = animatedDetentsState.get();
+      const isLayoutReady = isLayoutCalculated.get();
+
+      if (detents === undefined || detents.length === 0) {
+        return;
+      }
+
+      // early exit if layout is not ready yet.
+      if (!isLayoutReady) {
+        return;
+      }
+
+      invariant(
+        index >= -1 && index <= detents.length - 1,
+        `'index' was provided but out of the provided snap points range! expected value to be between -1, ${
+          detents.length - 1
+        }`
+      );
+
+      if (__DEV__) {
+        print({
+          component: 'BottomSheet',
+          method: 'handleSnapToIndex',
+          params: {
+            index,
+          },
+        });
+      }
+
+      const targetPosition = detents[index];
+
+      /**
+       * exit method if :
+       * - layout is not calculated.
+       * - already animating to next position.
+       * - sheet is forced closing.
+       */
+      const { nextPosition, nextIndex, isForcedClosing } =
+        animatedAnimationState.get();
+      if (
+        !isLayoutCalculated.value ||
+        index === nextIndex ||
+        targetPosition === nextPosition ||
+        isForcedClosing
       ) {
-        const snapPoints = animatedSnapPoints.value;
-        invariant(
-          index >= -1 && index <= snapPoints.length - 1,
-          `'index' was provided but out of the provided snap points range! expected value to be between -1, ${
-            snapPoints.length - 1
-          }`
-        );
-        if (__DEV__) {
-          print({
-            component: BottomSheet.name,
-            method: handleSnapToIndex.name,
-            params: {
-              index,
-            },
-          });
-        }
+        return;
+      }
 
-        const nextPosition = snapPoints[index];
+      /**
+       * reset temporary position boolean.
+       */
+      isInTemporaryPosition.value = false;
 
-        /**
-         * exit method if :
-         * - layout is not calculated.
-         * - already animating to next position.
-         * - sheet is forced closing.
-         */
-        if (
-          !isLayoutCalculated.value ||
-          index === animatedNextPositionIndex.value ||
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
-        ) {
-          return;
-        }
-
-        /**
-         * reset temporary position boolean.
-         */
-        isInTemporaryPosition.value = false;
-
-        runOnUI(animateToPosition)(
-          nextPosition,
-          ANIMATION_SOURCE.USER,
-          0,
-          animationConfigs
-        );
-      },
-      [
-        animateToPosition,
-        isLayoutCalculated,
-        isInTemporaryPosition,
-        isForcedClosing,
-        animatedSnapPoints,
-        animatedNextPosition,
-        animatedNextPositionIndex,
-      ]
-    );
-    const handleSnapToPosition = useWorkletCallback(
+      runOnUI(animateToPosition)(
+        targetPosition,
+        ANIMATION_SOURCE.USER,
+        0,
+        animationConfigs
+      );
+    });
+    const handleSnapToPosition = useCallback(
       function handleSnapToPosition(
         position: number | string,
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
+        'worklet';
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleSnapToPosition.name,
+            component: 'BottomSheet',
+            method: 'handleSnapToPosition',
             params: {
               position,
             },
           });
         }
 
+        const { containerHeight } = animatedLayoutState.get();
         /**
          * normalized provided position.
          */
-        const nextPosition = normalizeSnapPoint(
-          position,
-          animatedContainerHeight.value
-        );
+        const targetPosition = normalizeSnapPoint(position, containerHeight);
 
         /**
          * exit method if :
@@ -1108,10 +1179,11 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * - already animating to next position.
          * - sheet is forced closing.
          */
+        const { nextPosition, isForcedClosing } = animatedAnimationState.get();
         if (
           !isLayoutCalculated ||
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
+          targetPosition === nextPosition ||
+          isForcedClosing
         ) {
           return;
         }
@@ -1122,7 +1194,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         isInTemporaryPosition.value = true;
 
         runOnUI(animateToPosition)(
-          nextPosition,
+          targetPosition,
           ANIMATION_SOURCE.USER,
           0,
           animationConfigs
@@ -1130,27 +1202,30 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       },
       [
         animateToPosition,
-        bottomInset,
-        topInset,
+        isInTemporaryPosition,
         isLayoutCalculated,
-        isForcedClosing,
-        animatedContainerHeight,
-        animatedPosition,
+        animatedLayoutState,
+        animatedAnimationState,
       ]
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleClose = useCallback(
       function handleClose(
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleClose.name,
+            component: 'BottomSheet',
+            method: 'handleClose',
           });
         }
 
-        const nextPosition = animatedClosedPosition.value;
+        const closedDetentPosition =
+          animatedDetentsState.get().closedDetentPosition;
+        if (closedDetentPosition === undefined) {
+          return;
+        }
+
+        const targetPosition = closedDetentPosition;
 
         /**
          * exit method if :
@@ -1158,10 +1233,11 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * - already animating to next position.
          * - sheet is forced closing.
          */
+        const { nextPosition, isForcedClosing } = animatedAnimationState.get();
         if (
           !isLayoutCalculated.value ||
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
+          targetPosition === nextPosition ||
+          isForcedClosing
         ) {
           return;
         }
@@ -1172,7 +1248,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         isInTemporaryPosition.value = false;
 
         runOnUI(animateToPosition)(
-          nextPosition,
+          targetPosition,
           ANIMATION_SOURCE.USER,
           0,
           animationConfigs
@@ -1180,36 +1256,38 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       },
       [
         animateToPosition,
-        isForcedClosing,
         isLayoutCalculated,
         isInTemporaryPosition,
-        animatedNextPosition,
-        animatedClosedPosition,
+        animatedDetentsState,
+        animatedAnimationState,
       ]
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleForceClose = useCallback(
       function handleForceClose(
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleForceClose.name,
+            component: 'BottomSheet',
+            method: 'handleForceClose',
           });
         }
 
-        const nextPosition = animatedClosedPosition.value;
+        const closedDetentPosition =
+          animatedDetentsState.get().closedDetentPosition;
+        if (closedDetentPosition === undefined) {
+          return;
+        }
+
+        const targetPosition = closedDetentPosition;
 
         /**
          * exit method if :
          * - already animating to next position.
          * - sheet is forced closing.
          */
-        if (
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
-        ) {
+        const { nextPosition, isForcedClosing } = animatedAnimationState.get();
+        if (targetPosition === nextPosition || isForcedClosing) {
           return;
         }
 
@@ -1221,10 +1299,16 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         /**
          * set force closing variable.
          */
-        isForcedClosing.value = true;
+        animatedAnimationState.set(state => {
+          'worklet';
+          return {
+            ...state,
+            isForcedClosing: true,
+          };
+        });
 
         runOnUI(animateToPosition)(
-          nextPosition,
+          targetPosition,
           ANIMATION_SOURCE.USER,
           0,
           animationConfigs
@@ -1232,26 +1316,29 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       },
       [
         animateToPosition,
-        isForcedClosing,
         isInTemporaryPosition,
-        animatedNextPosition,
-        animatedClosedPosition,
+        animatedDetentsState,
+        animatedAnimationState,
       ]
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleExpand = useCallback(
       function handleExpand(
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleExpand.name,
+            component: 'BottomSheet',
+            method: 'handleExpand',
           });
         }
 
-        const snapPoints = animatedSnapPoints.value;
-        const nextPosition = snapPoints[snapPoints.length - 1];
+        const { detents } = animatedDetentsState.get();
+        if (detents === undefined || detents.length === 0) {
+          return;
+        }
+
+        const targetIndex = detents.length - 1;
+        const targetPosition = detents[targetIndex];
 
         /**
          * exit method if :
@@ -1259,11 +1346,13 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * - already animating to next position.
          * - sheet is forced closing.
          */
+        const { nextPosition, nextIndex, isForcedClosing } =
+          animatedAnimationState.get();
         if (
           !isLayoutCalculated.value ||
-          snapPoints.length - 1 === animatedNextPositionIndex.value ||
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
+          targetIndex === nextIndex ||
+          targetPosition === nextPosition ||
+          isForcedClosing
         ) {
           return;
         }
@@ -1274,7 +1363,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         isInTemporaryPosition.value = false;
 
         runOnUI(animateToPosition)(
-          nextPosition,
+          targetPosition,
           ANIMATION_SOURCE.USER,
           0,
           animationConfigs
@@ -1284,25 +1373,27 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         animateToPosition,
         isInTemporaryPosition,
         isLayoutCalculated,
-        isForcedClosing,
-        animatedSnapPoints,
-        animatedNextPosition,
-        animatedNextPositionIndex,
+        animatedDetentsState,
+        animatedAnimationState,
       ]
     );
-    // biome-ignore lint/correctness/useExhaustiveDependencies(BottomSheet.name): used for debug only
     const handleCollapse = useCallback(
       function handleCollapse(
         animationConfigs?: WithSpringConfig | WithTimingConfig
       ) {
         if (__DEV__) {
           print({
-            component: BottomSheet.name,
-            method: handleCollapse.name,
+            component: 'BottomSheet',
+            method: 'handleCollapse',
           });
         }
 
-        const nextPosition = animatedSnapPoints.value[0];
+        const { detents } = animatedDetentsState.get();
+        if (detents === undefined || detents.length === 0) {
+          return;
+        }
+
+        const targetPosition = detents[0];
 
         /**
          * exit method if :
@@ -1310,11 +1401,13 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * - already animating to next position.
          * - sheet is forced closing.
          */
+        const { nextPosition, nextIndex, isForcedClosing } =
+          animatedAnimationState.get();
         if (
           !isLayoutCalculated ||
-          animatedNextPositionIndex.value === 0 ||
-          nextPosition === animatedNextPosition.value ||
-          isForcedClosing.value
+          nextIndex === 0 ||
+          targetPosition === nextPosition ||
+          isForcedClosing
         ) {
           return;
         }
@@ -1325,7 +1418,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         isInTemporaryPosition.value = false;
 
         runOnUI(animateToPosition)(
-          nextPosition,
+          targetPosition,
           ANIMATION_SOURCE.USER,
           0,
           animationConfigs
@@ -1333,12 +1426,10 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
       },
       [
         animateToPosition,
-        isForcedClosing,
         isLayoutCalculated,
         isInTemporaryPosition,
-        animatedSnapPoints,
-        animatedNextPosition,
-        animatedNextPositionIndex,
+        animatedDetentsState,
+        animatedAnimationState,
       ]
     );
 
@@ -1355,6 +1446,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
     //#region contexts variables
     const internalContextVariables = useMemo(
       () => ({
+        textInputNodesRef,
         enableContentPanningGesture,
         enableDynamicSizing,
         overDragResistanceFactor,
@@ -1363,68 +1455,49 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         animatedAnimationState,
         animatedSheetState,
         animatedScrollableState,
-        animatedScrollableOverrideState,
+        animatedScrollableStatus,
         animatedContentGestureState,
         animatedHandleGestureState,
         animatedKeyboardState,
-        animatedScrollableType,
+        animatedLayoutState,
         animatedIndex,
         animatedPosition,
-        animatedContentHeight,
-        animatedClosedPosition,
-        animatedHandleHeight,
-        animatedFooterHeight,
-        animatedKeyboardHeight,
-        animatedKeyboardHeightInContainer,
-        animatedContainerHeight,
-        animatedSnapPoints,
-        animatedHighestSnapPoint,
-        animatedScrollableContentOffsetY,
+        animatedSheetHeight,
+        animatedDetentsState,
         isInTemporaryPosition,
-        isContentHeightFixed,
-        isScrollableRefreshable,
-        shouldHandleKeyboardEvents,
         simultaneousHandlers: _providedSimultaneousHandlers,
         waitFor: _providedWaitFor,
         activeOffsetX: _providedActiveOffsetX,
         activeOffsetY: _providedActiveOffsetY,
         failOffsetX: _providedFailOffsetX,
         failOffsetY: _providedFailOffsetY,
+        enableBlurKeyboardOnGesture,
         animateToPosition,
         stopAnimation,
         setScrollableRef,
         removeScrollableRef,
       }),
       [
+        textInputNodesRef,
         animatedIndex,
         animatedPosition,
-        animatedContentHeight,
-        animatedScrollableType,
+        animatedSheetHeight,
+        animatedLayoutState,
         animatedContentGestureState,
         animatedHandleGestureState,
-        animatedClosedPosition,
-        animatedFooterHeight,
-        animatedContainerHeight,
-        animatedHandleHeight,
         animatedAnimationState,
         animatedKeyboardState,
-        animatedKeyboardHeight,
-        animatedKeyboardHeightInContainer,
         animatedSheetState,
-        animatedHighestSnapPoint,
         animatedScrollableState,
-        animatedScrollableOverrideState,
-        animatedSnapPoints,
-        shouldHandleKeyboardEvents,
-        animatedScrollableContentOffsetY,
-        isScrollableRefreshable,
-        isContentHeightFixed,
+        animatedScrollableStatus,
+        animatedDetentsState,
         isInTemporaryPosition,
         enableContentPanningGesture,
         overDragResistanceFactor,
         enableOverDrag,
         enablePanDownToClose,
         enableDynamicSizing,
+        enableBlurKeyboardOnGesture,
         _providedSimultaneousHandlers,
         _providedWaitFor,
         _providedActiveOffsetX,
@@ -1461,84 +1534,47 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
     );
     //#endregion
 
-    //#region styles
-    const containerAnimatedStyle = useAnimatedStyle(
-      () => ({
-        opacity:
-          Platform.OS === 'android' && animatedIndex.value === -1 ? 0 : 1,
-        transform: [
-          {
-            translateY: animatedPosition.value,
-          },
-        ],
-      }),
-      [animatedPosition, animatedIndex]
-    );
-    const containerStyle = useMemo(
-      () => [_providedStyle, styles.container, containerAnimatedStyle],
-      [_providedStyle, containerAnimatedStyle]
-    );
-    const contentContainerAnimatedStyle = useAnimatedStyle(() => {
-      /**
-       * if dynamic sizing is enabled, and content height
-       * is still not set, then we exit method.
-       */
-      if (
-        enableDynamicSizing &&
-        animatedContentHeight.value === INITIAL_CONTAINER_HEIGHT
-      ) {
-        return {};
-      }
-
-      return {
-        height: animate({
-          point: animatedContentHeightMax.value,
-          configs: _providedAnimationConfigs,
-          overrideReduceMotion: _providedOverrideReduceMotion,
-        }),
-      };
-    }, [
-      enableDynamicSizing,
-      animatedContentHeight,
-      animatedContentHeightMax,
-      _providedOverrideReduceMotion,
-      _providedAnimationConfigs,
-    ]);
-    const contentContainerStyle = useMemo(
-      () => [styles.contentContainer, contentContainerAnimatedStyle],
-      [contentContainerAnimatedStyle]
-    );
-    /**
-     * added safe area to prevent the sheet from floating above
-     * the bottom of the screen, when sheet being over dragged or
-     * when the sheet is resized.
-     */
-    const contentMaskContainerAnimatedStyle = useAnimatedStyle(() => {
-      if (detached) {
-        return {
-          overflow: 'visible',
-        };
-      }
-      return {
-        paddingBottom: animatedContainerHeight.value,
-      };
-    }, [animatedContainerHeight, detached]);
-    const contentMaskContainerStyle = useMemo(
-      () => [styles.contentMaskContainer, contentMaskContainerAnimatedStyle],
-      [contentMaskContainerAnimatedStyle]
-    );
-    //#endregion
-
     //#region effects
     useAnimatedReaction(
-      () => animatedContainerHeight.value,
+      () => animatedLayoutState.get().containerHeight,
       (result, previous) => {
-        if (result === INITIAL_CONTAINER_HEIGHT) {
+        if (result === INITIAL_LAYOUT_VALUE) {
           return;
         }
 
         animatedContainerHeightDidChange.value = result !== previous;
-      }
+
+        const { closedDetentPosition } = animatedDetentsState.get();
+        if (closedDetentPosition === undefined) {
+          return;
+        }
+
+        /**
+         * When user close the bottom sheet while the keyboard open on Android with
+         * software keyboard layout mode set to resize, the close position would be
+         * set to the container height - the keyboard height, and when the keyboard
+         * closes, the container height and here we restart the animation again.
+         *
+         * [read more](https://github.com/gorhom/react-native-bottom-sheet/issues/2163)
+         */
+        const {
+          status: animationStatus,
+          source: animationSource,
+          nextIndex,
+        } = animatedAnimationState.get();
+        if (
+          animationStatus === ANIMATION_STATUS.RUNNING &&
+          animationSource === ANIMATION_SOURCE.GESTURE &&
+          nextIndex === -1
+        ) {
+          animateToPosition(closedDetentPosition, ANIMATION_SOURCE.GESTURE);
+        }
+      },
+      [
+        animatedContainerHeightDidChange,
+        animatedAnimationState,
+        animatedDetentsState,
+      ]
     );
 
     /**
@@ -1548,7 +1584,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
      * @alias OnSnapPointsChange
      */
     useAnimatedReaction(
-      () => animatedSnapPoints.value,
+      () => animatedDetentsState.get().detents,
       (result, previous) => {
         /**
          * if values did not change, and did handle on mount animation
@@ -1556,7 +1592,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          */
         if (
           JSON.stringify(result) === JSON.stringify(previous) &&
-          isAnimatedOnMount.value
+          didAnimateOnMount.value
         ) {
           return;
         }
@@ -1570,7 +1606,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
 
         if (__DEV__) {
           runOnJS(print)({
-            component: BottomSheet.name,
+            component: 'BottomSheet',
             method: 'useAnimatedReaction::OnSnapPointChange',
             category: 'effect',
             params: {
@@ -1581,7 +1617,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
 
         evaluatePosition(ANIMATION_SOURCE.SNAP_POINT_CHANGE);
       },
-      [isLayoutCalculated, animatedSnapPoints]
+      [isLayoutCalculated, didAnimateOnMount, animatedDetentsState]
     );
 
     /**
@@ -1590,69 +1626,65 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
      * @alias OnKeyboardStateChange
      */
     useAnimatedReaction(
-      () => ({
-        _keyboardState: animatedKeyboardState.value,
-        _keyboardHeight: animatedKeyboardHeight.value,
-      }),
+      () =>
+        animatedKeyboardState.get().status + animatedKeyboardState.get().height,
       (result, _previousResult) => {
-        const { _keyboardState, _keyboardHeight } = result;
-        const _previousKeyboardState = _previousResult?._keyboardState;
-        const _previousKeyboardHeight = _previousResult?._keyboardHeight;
-
         /**
          * if keyboard state is equal to the previous state, then exit the method
          */
-        if (
-          _keyboardState === _previousKeyboardState &&
-          _keyboardHeight === _previousKeyboardHeight
-        ) {
+        if (result === _previousResult) {
           return;
         }
+
+        const { status, height, easing, duration, target } =
+          animatedKeyboardState.get();
 
         /**
          * if state is undetermined, then we early exit.
          */
-        if (_keyboardState === KEYBOARD_STATE.UNDETERMINED) {
+        if (status === KEYBOARD_STATUS.UNDETERMINED) {
           return;
         }
 
+        const { status: animationStatus, source: animationSource } =
+          animatedAnimationState.get();
         /**
          * if keyboard is hidden by customer gesture, then we early exit.
          */
         if (
-          _keyboardState === KEYBOARD_STATE.HIDDEN &&
-          animatedAnimationState.value === ANIMATION_STATE.RUNNING &&
-          animatedAnimationSource.value === ANIMATION_SOURCE.GESTURE
+          status === KEYBOARD_STATUS.HIDDEN &&
+          animationStatus === ANIMATION_STATUS.RUNNING &&
+          animationSource === ANIMATION_SOURCE.GESTURE
         ) {
           return;
-        }
-
-        if (__DEV__) {
-          runOnJS(print)({
-            component: BottomSheet.name,
-            method: 'useAnimatedReaction::OnKeyboardStateChange',
-            category: 'effect',
-            params: {
-              keyboardState: _keyboardState,
-              keyboardHeight: _keyboardHeight,
-            },
-          });
         }
 
         /**
          * Calculate the keyboard height in the container.
          */
-        animatedKeyboardHeightInContainer.value =
-          _keyboardHeight === 0
+        const containerOffset = animatedLayoutState.get().containerOffset;
+        let heightWithinContainer =
+          height === 0
             ? 0
             : $modal
               ? Math.abs(
-                  _keyboardHeight -
-                    Math.abs(bottomInset - animatedContainerOffset.value.bottom)
+                  height - Math.abs(bottomInset - containerOffset.bottom)
                 )
-              : Math.abs(
-                  _keyboardHeight - animatedContainerOffset.value.bottom
-                );
+              : Math.abs(height - containerOffset.bottom);
+
+        if (__DEV__) {
+          runOnJS(print)({
+            component: 'BottomSheet',
+            method: 'useAnimatedReaction::OnKeyboardStateChange',
+            category: 'effect',
+            params: {
+              status,
+              height,
+              heightWithinContainer,
+              containerOffset,
+            },
+          });
+        }
 
         /**
          * if platform is android and the input mode is resize, then exit the method
@@ -1661,12 +1693,24 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           Platform.OS === 'android' &&
           android_keyboardInputMode === KEYBOARD_INPUT_MODE.adjustResize
         ) {
-          animatedKeyboardHeightInContainer.value = 0;
+          heightWithinContainer = 0;
 
           if (keyboardBehavior === KEYBOARD_BEHAVIOR.interactive) {
+            animatedKeyboardState.set({
+              target,
+              status,
+              height,
+              easing,
+              duration,
+              heightWithinContainer,
+            });
             return;
           }
         }
+        animatedKeyboardState.set(state => ({
+          ...state,
+          heightWithinContainer,
+        }));
 
         /**
          * if user is interacting with sheet, then exit the method
@@ -1684,17 +1728,13 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
          * if new keyboard state is hidden and blur behavior is none, then exit the method
          */
         if (
-          _keyboardState === KEYBOARD_STATE.HIDDEN &&
+          status === KEYBOARD_STATUS.HIDDEN &&
           keyboardBlurBehavior === KEYBOARD_BLUR_BEHAVIOR.none
         ) {
           return;
         }
 
-        const animationConfigs = getKeyboardAnimationConfigs(
-          keyboardAnimationEasing.value,
-          keyboardAnimationDuration.value
-        );
-
+        const animationConfigs = getKeyboardAnimationConfigs(easing, duration);
         evaluatePosition(ANIMATION_SOURCE.KEYBOARD, animationConfigs);
       },
       [
@@ -1703,7 +1743,8 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
         keyboardBehavior,
         keyboardBlurBehavior,
         android_keyboardInputMode,
-        animatedContainerOffset,
+        animatedKeyboardState,
+        animatedLayoutState,
         getEvaluatedPosition,
       ]
     );
@@ -1718,7 +1759,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           _providedAnimatedPosition.value = _animatedPosition + topInset;
         }
       },
-      []
+      [_providedAnimatedPosition, topInset]
     );
 
     /**
@@ -1731,127 +1772,7 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
           _providedAnimatedIndex.value = _animatedIndex;
         }
       },
-      []
-    );
-
-    /**
-     * React to internal variables to detect change in snap position.
-     *
-     * @alias OnChange
-     */
-    useAnimatedReaction(
-      () => ({
-        _animatedIndex: animatedIndex.value,
-        _animatedPosition: animatedPosition.value,
-        _animationState: animatedAnimationState.value,
-        _contentGestureState: animatedContentGestureState.value,
-        _handleGestureState: animatedHandleGestureState.value,
-      }),
-      ({
-        _animatedIndex,
-        _animatedPosition,
-        _animationState,
-        _contentGestureState,
-        _handleGestureState,
-      }) => {
-        /**
-         * exit the method if animation state is not stopped.
-         */
-        if (_animationState !== ANIMATION_STATE.STOPPED) {
-          return;
-        }
-
-        /**
-         * exit the method if index value is not synced with
-         * position value.
-         *
-         * [read more](https://github.com/gorhom/react-native-bottom-sheet/issues/1356)
-         */
-        if (
-          animatedNextPosition.value !== INITIAL_VALUE &&
-          animatedNextPositionIndex.value !== INITIAL_VALUE &&
-          (_animatedPosition !== animatedNextPosition.value ||
-            _animatedIndex !== animatedNextPositionIndex.value)
-        ) {
-          return;
-        }
-
-        /**
-         * exit the method if animated index value
-         * has fraction, e.g. 1.99, 0.52
-         */
-        if (_animatedIndex % 1 !== 0) {
-          return;
-        }
-
-        /**
-         * exit the method if there any active gesture.
-         */
-        const hasNoActiveGesture =
-          (_contentGestureState === State.END ||
-            _contentGestureState === State.UNDETERMINED ||
-            _contentGestureState === State.CANCELLED) &&
-          (_handleGestureState === State.END ||
-            _handleGestureState === State.UNDETERMINED ||
-            _handleGestureState === State.CANCELLED);
-        if (!hasNoActiveGesture) {
-          return;
-        }
-
-        /**
-         * exit the method if the animated index is out of sync with the
-         * animated position. this happened when the user enable reduce
-         * motion setting only.
-         */
-        if (
-          reduceMotion &&
-          _animatedIndex === animatedCurrentIndex.value &&
-          animatedSnapPoints.value[_animatedIndex] !== _animatedPosition
-        ) {
-          return;
-        }
-
-        /**
-         * if the index is not equal to the current index,
-         * than the sheet position had changed and we trigger
-         * the `onChange` callback.
-         */
-        if (_animatedIndex !== animatedCurrentIndex.value) {
-          if (__DEV__) {
-            runOnJS(print)({
-              component: BottomSheet.name,
-              method: 'useAnimatedReaction::OnChange',
-              category: 'effect',
-              params: {
-                animatedCurrentIndex: animatedCurrentIndex.value,
-                animatedIndex: _animatedIndex,
-              },
-            });
-          }
-
-          animatedCurrentIndex.value = _animatedIndex;
-          runOnJS(handleOnChange)(_animatedIndex, _animatedPosition);
-        }
-
-        /**
-         * if index is `-1` than we fire the `onClose` callback.
-         */
-        if (_animatedIndex === -1 && _providedOnClose) {
-          if (__DEV__) {
-            runOnJS(print)({
-              component: BottomSheet.name,
-              method: 'useAnimatedReaction::onClose',
-              category: 'effect',
-              params: {
-                animatedCurrentIndex: animatedCurrentIndex.value,
-                animatedIndex: _animatedIndex,
-              },
-            });
-          }
-          runOnJS(_providedOnClose)();
-        }
-      },
-      [reduceMotion, handleOnChange, _providedOnClose]
+      [_providedAnimatedIndex]
     );
 
     /**
@@ -1860,110 +1781,93 @@ const BottomSheetComponent = forwardRef<BottomSheet, BottomSheetProps>(
      * @alias onIndexChange
      */
     useEffect(() => {
-      if (isAnimatedOnMount.value) {
-        handleSnapToIndex(_providedIndex);
+      // early exit, if animate on mount is set and it did not animate yet.
+      if (animateOnMount && !didAnimateOnMount.value) {
+        return;
       }
-    }, [_providedIndex, isAnimatedOnMount, handleSnapToIndex]);
+
+      handleSnapToIndex(_providedIndex);
+    }, [animateOnMount, _providedIndex, didAnimateOnMount, handleSnapToIndex]);
     //#endregion
 
     // render
-    const DraggableView = enableContentPanningGesture
-      ? BottomSheetDraggableView
-      : Animated.View;
     return (
       <BottomSheetProvider value={externalContextVariables}>
         <BottomSheetInternalProvider value={internalContextVariables}>
           <BottomSheetGestureHandlersProvider
             gestureEventsHandlersHook={gestureEventsHandlersHook}
           >
-            <BottomSheetBackdropContainer
-              key="BottomSheetBackdropContainer"
-              animatedIndex={animatedIndex}
-              animatedPosition={animatedPosition}
-              backdropComponent={backdropComponent}
-            />
-            <BottomSheetContainer
+            {BackdropComponent ? (
+              <BackdropComponent
+                animatedIndex={animatedIndex}
+                animatedPosition={animatedPosition}
+                style={StyleSheet.absoluteFill}
+              />
+            ) : null}
+            <BottomSheetHostingContainer
               key="BottomSheetContainer"
               shouldCalculateHeight={!$modal}
-              containerHeight={_animatedContainerHeight}
-              containerOffset={animatedContainerOffset}
+              layoutState={animatedLayoutState}
+              containerLayoutState={containerLayoutState}
               topInset={topInset}
               bottomInset={bottomInset}
               detached={detached}
               style={_providedContainerStyle}
             >
-              <Animated.View style={containerStyle}>
-                <BottomSheetBackgroundContainer
-                  key="BottomSheetBackgroundContainer"
-                  animatedIndex={animatedIndex}
-                  animatedPosition={animatedPosition}
-                  backgroundComponent={backgroundComponent}
-                  backgroundStyle={_providedBackgroundStyle}
-                />
-                <Animated.View
+              <BottomSheetBody style={style}>
+                {backgroundComponent === null ? null : (
+                  <BottomSheetBackgroundContainer
+                    key="BottomSheetBackgroundContainer"
+                    animatedIndex={animatedIndex}
+                    animatedPosition={animatedPosition}
+                    backgroundComponent={backgroundComponent}
+                    backgroundStyle={_providedBackgroundStyle}
+                  />
+                )}
+                <BottomSheetContent
                   pointerEvents="box-none"
-                  style={contentMaskContainerStyle}
                   accessible={_providedAccessible ?? undefined}
                   accessibilityRole={_providedAccessibilityRole ?? undefined}
                   accessibilityLabel={_providedAccessibilityLabel ?? undefined}
+                  keyboardBehavior={keyboardBehavior}
+                  detached={detached}
                 >
-                  <DraggableView
-                    key="BottomSheetRootDraggableView"
-                    style={contentContainerStyle}
-                  >
-                    {children}
-                  </DraggableView>
-                  {footerComponent && (
+                  {children}
+                  {footerComponent ? (
                     <BottomSheetFooterContainer
                       footerComponent={footerComponent}
                     />
-                  )}
-                </Animated.View>
-                <BottomSheetHandleContainer
-                  key="BottomSheetHandleContainer"
-                  animatedIndex={animatedIndex}
-                  animatedPosition={animatedPosition}
-                  handleHeight={animatedHandleHeight}
-                  enableHandlePanningGesture={enableHandlePanningGesture}
-                  enableOverDrag={enableOverDrag}
-                  enablePanDownToClose={enablePanDownToClose}
-                  overDragResistanceFactor={overDragResistanceFactor}
-                  keyboardBehavior={keyboardBehavior}
-                  handleComponent={handleComponent}
-                  handleStyle={_providedHandleStyle}
-                  handleIndicatorStyle={_providedHandleIndicatorStyle}
-                />
-              </Animated.View>
+                  ) : null}
+                </BottomSheetContent>
+                {handleComponent !== null ? (
+                  <BottomSheetHandleContainer
+                    key="BottomSheetHandleContainer"
+                    animatedIndex={animatedIndex}
+                    animatedPosition={animatedPosition}
+                    enableHandlePanningGesture={enableHandlePanningGesture}
+                    enableOverDrag={enableOverDrag}
+                    enablePanDownToClose={enablePanDownToClose}
+                    overDragResistanceFactor={overDragResistanceFactor}
+                    keyboardBehavior={keyboardBehavior}
+                    handleComponent={handleComponent}
+                    handleStyle={_providedHandleStyle}
+                    handleIndicatorStyle={_providedHandleIndicatorStyle}
+                  />
+                ) : null}
+              </BottomSheetBody>
               {/* <BottomSheetDebugView
                 values={{
-                  // topInset,
-                  // bottomInset,
-                  animatedSheetState,
-                  // animatedScrollableState,
-                  // animatedScrollableOverrideState,
-                  // isScrollableRefreshable,
-                  // animatedScrollableContentOffsetY,
-                  // keyboardState,
-                  animatedIndex,
-                  animatedCurrentIndex,
-                  animatedPosition,
-                  // animatedHandleGestureState,
-                  // animatedContentGestureState,
-                  animatedContainerHeight,
-                  animatedContentHeightMax,
-                  animatedSheetHeight,
-                  animatedHandleHeight,
-                  animatedContentHeight,
-                  animatedFooterHeight,
-                  animatedKeyboardHeight,
-                  animatedKeyboardHeightInContainer,
-                  // // keyboardHeight,
-                  // isLayoutCalculated,
-                  // isContentHeightFixed,
-                  // isInTemporaryPosition,
+                  index: animatedIndex,
+                  position: animatedPosition,
+                  sheetStatus: animatedSheetState,
+                  scrollableStatus: animatedScrollableStatus,
+                  layoutState: animatedLayoutState,
+                  detentsState: animatedDetentsState,
+                  sheetHeight: animatedSheetHeight,
+                  isLayoutCalculated,
                 }}
               /> */}
-            </BottomSheetContainer>
+            </BottomSheetHostingContainer>
           </BottomSheetGestureHandlersProvider>
         </BottomSheetInternalProvider>
       </BottomSheetProvider>

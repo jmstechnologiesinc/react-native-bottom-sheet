@@ -1,20 +1,22 @@
 import { PortalProvider } from '@gorhom/portal';
 import React, { useCallback, useMemo, useRef } from 'react';
 import { useSharedValue } from 'react-native-reanimated';
-import { MODAL_STACK_BEHAVIOR } from '../../constants';
+import {
+  INITIAL_CONTAINER_LAYOUT,
+  MODAL_STACK_BEHAVIOR,
+} from '../../constants';
 import {
   BottomSheetModalInternalProvider,
   BottomSheetModalProvider,
 } from '../../contexts';
-import {
-  INITIAL_CONTAINER_HEIGHT,
-  INITIAL_CONTAINER_OFFSET,
-} from '../bottomSheet/constants';
-import BottomSheetContainer from '../bottomSheetContainer';
+import type { ContainerLayoutState } from '../../types';
+import { id } from '../../utilities/id';
+import { BottomSheetHostingContainer } from '../bottomSheetHostingContainer';
 import type {
   BottomSheetModalPrivateMethods,
   BottomSheetModalStackBehavior,
 } from '../bottomSheetModal';
+import { MODAL_STATUS } from '../bottomSheetModal/constants';
 import type {
   BottomSheetModalProviderProps,
   BottomSheetModalRef,
@@ -24,11 +26,13 @@ const BottomSheetModalProviderWrapper = ({
   children,
 }: BottomSheetModalProviderProps) => {
   //#region layout variables
-  const animatedContainerHeight = useSharedValue(INITIAL_CONTAINER_HEIGHT);
-  const animatedContainerOffset = useSharedValue(INITIAL_CONTAINER_OFFSET);
+  const animatedContainerLayoutState = useSharedValue<ContainerLayoutState>(
+    INITIAL_CONTAINER_LAYOUT
+  );
   //#endregion
 
   //#region variables
+  const hostName = useMemo(() => `bottom-sheet-portal-${id()}`, []);
   const sheetsQueueRef = useRef<BottomSheetModalRef[]>([]);
   //#endregion
 
@@ -64,7 +68,13 @@ const BottomSheetModalProviderWrapper = ({
        * - it is not unmounting
        */
       const currentMountedSheet = _sheetsQueue[_sheetsQueue.length - 1];
-      if (currentMountedSheet && !currentMountedSheet.willUnmount) {
+      const currentMountedSheetStatus =
+        currentMountedSheet?.ref.current?.status.current;
+      const currentMountedSheetWillUnmount =
+        currentMountedSheetStatus !== undefined &&
+        currentMountedSheetStatus === MODAL_STATUS.DISMISSING;
+
+      if (currentMountedSheet && !currentMountedSheetWillUnmount) {
         if (stackBehavior === MODAL_STACK_BEHAVIOR.replace) {
           currentMountedSheet.ref?.current?.dismiss();
         } else if (stackBehavior === MODAL_STACK_BEHAVIOR.switch) {
@@ -73,8 +83,7 @@ const BottomSheetModalProviderWrapper = ({
       }
 
       /**
-       * Restore and remove incoming sheet from the queue,
-       * if it was registered.
+       * Restore and remove incoming sheet from the queue, if it was registered.
        */
       if (sheetIndex !== -1) {
         _sheetsQueue.splice(sheetIndex, 1);
@@ -84,7 +93,6 @@ const BottomSheetModalProviderWrapper = ({
       _sheetsQueue.push({
         key,
         ref,
-        willUnmount: false,
       });
       sheetsQueueRef.current = _sheetsQueue;
     },
@@ -99,8 +107,10 @@ const BottomSheetModalProviderWrapper = ({
      * Here we remove the unmounted sheet and update
      * the sheets queue.
      */
-    _sheetsQueue.splice(sheetIndex, 1);
-    sheetsQueueRef.current = _sheetsQueue;
+    if (sheetIndex !== -1) {
+      _sheetsQueue.splice(sheetIndex, 1);
+      sheetsQueueRef.current = _sheetsQueue;
+    }
 
     /**
      * Here we try to restore previous sheet position if unmounted
@@ -110,11 +120,16 @@ const BottomSheetModalProviderWrapper = ({
     const hasMinimizedSheet = sheetsQueueRef.current.length > 0;
     const minimizedSheet =
       sheetsQueueRef.current[sheetsQueueRef.current.length - 1];
+    const minimizedSheetStatus = minimizedSheet?.ref.current?.status.current;
+    const minimizedSheetWillUnmount =
+      minimizedSheetStatus !== undefined &&
+      minimizedSheetStatus === MODAL_STATUS.DISMISSING;
+
     if (
       sheetOnTop &&
       hasMinimizedSheet &&
       minimizedSheet &&
-      !minimizedSheet.willUnmount
+      !minimizedSheetWillUnmount
     ) {
       sheetsQueueRef.current[
         sheetsQueueRef.current.length - 1
@@ -125,14 +140,6 @@ const BottomSheetModalProviderWrapper = ({
     const _sheetsQueue = sheetsQueueRef.current.slice();
     const sheetIndex = _sheetsQueue.findIndex(item => item.key === key);
     const sheetOnTop = sheetIndex === _sheetsQueue.length - 1;
-
-    /**
-     * Here we mark the sheet that will unmount,
-     * so it won't be restored.
-     */
-    if (sheetIndex !== -1) {
-      _sheetsQueue[sheetIndex].willUnmount = true;
-    }
 
     /**
      * Here we try to restore previous sheet position,
@@ -159,7 +166,7 @@ const BottomSheetModalProviderWrapper = ({
     return false;
   }, []);
   const handleDismissAll = useCallback(() => {
-    sheetsQueueRef.current.map(item => {
+    sheetsQueueRef.current.forEach(item => {
       item.ref?.current?.dismiss();
     });
   }, []);
@@ -175,15 +182,15 @@ const BottomSheetModalProviderWrapper = ({
   );
   const internalContextVariables = useMemo(
     () => ({
-      containerHeight: animatedContainerHeight,
-      containerOffset: animatedContainerOffset,
+      hostName,
+      containerLayoutState: animatedContainerLayoutState,
       mountSheet: handleMountSheet,
       unmountSheet: handleUnmountSheet,
       willUnmountSheet: handleWillUnmountSheet,
     }),
     [
-      animatedContainerHeight,
-      animatedContainerOffset,
+      hostName,
+      animatedContainerLayoutState,
       handleMountSheet,
       handleUnmountSheet,
       handleWillUnmountSheet,
@@ -195,11 +202,10 @@ const BottomSheetModalProviderWrapper = ({
   return (
     <BottomSheetModalProvider value={externalContextVariables}>
       <BottomSheetModalInternalProvider value={internalContextVariables}>
-        <BottomSheetContainer
-          containerOffset={animatedContainerOffset}
-          containerHeight={animatedContainerHeight}
+        <BottomSheetHostingContainer
+          containerLayoutState={animatedContainerLayoutState}
         />
-        <PortalProvider>{children}</PortalProvider>
+        <PortalProvider rootHostName={hostName}>{children}</PortalProvider>
       </BottomSheetModalInternalProvider>
     </BottomSheetModalProvider>
   );

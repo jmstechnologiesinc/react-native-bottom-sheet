@@ -1,13 +1,20 @@
-// @ts-ignore
-import type { FlashListProps } from '@shopify/flash-list';
 import React, { forwardRef, memo, type Ref, useMemo } from 'react';
-import { type ScrollViewProps, StyleSheet } from 'react-native';
-import type Animated from 'react-native-reanimated';
+import type { FlatListProps, ScrollViewProps } from 'react-native';
+import type { AnimatedProps } from 'react-native-reanimated';
 import BottomSheetScrollView from './BottomSheetScrollView';
 import type {
-  BottomSheetScrollViewMethods,
   BottomSheetScrollableProps,
+  BottomSheetScrollViewMethods,
 } from './types';
+
+/**
+ * Minimal subset of FlashListProps needed for BottomSheetFlashList.
+ * Defined locally to avoid requiring @shopify/flash-list as a dependency,
+ * since the runtime import is optional (try/catch require).
+ */
+interface FlashListProps<T> extends FlatListProps<T> {
+  estimatedItemSize?: number;
+}
 
 let FlashList: {
   FlashList: React.FC;
@@ -19,7 +26,7 @@ try {
 } catch (_) {}
 
 export type BottomSheetFlashListProps<T> = Omit<
-  Animated.AnimateProps<FlashListProps<T>>,
+  AnimatedProps<FlashListProps<T>>,
   'decelerationRate' | 'onScroll' | 'scrollEventThrottle'
 > &
   BottomSheetScrollableProps & {
@@ -45,16 +52,20 @@ const BottomSheetFlashListComponent = forwardRef<
     if (!FlashList) {
       throw 'You need to install FlashList first, `yarn install @shopify/flash-list`';
     }
+
+    console.warn(
+      'BottomSheetFlashList is deprecated, please use useBottomSheetScrollableCreator instead.'
+    );
   }, []);
 
   //#region render
   const renderScrollComponent = useMemo(
     () =>
       forwardRef<BottomSheetScrollViewMethods, ScrollViewProps>(
-        // @ts-ignore
+        // @ts-expect-error
         ({ data, ...props }, ref) => {
           return (
-            // @ts-ignore
+            // @ts-expect-error
             <BottomSheetScrollView
               ref={ref}
               {...props}
@@ -75,13 +86,6 @@ const BottomSheetFlashListComponent = forwardRef<
     />
   );
   //#endregion
-});
-
-export const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    overflow: 'visible',
-  },
 });
 
 export const BottomSheetFlashList = memo(BottomSheetFlashListComponent);
