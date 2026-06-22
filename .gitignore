@@ -2,6 +2,22 @@
 #
 .DS_Store
 
+# Secrets / credentials
+#
+.npmrc
+**/.npmrc
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+secrets.*
+**/secrets.*
+github-token*
+.github_token
+
 # XDE
 .expo/
 
